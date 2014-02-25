@@ -28,6 +28,7 @@ var (
 	Log        log.Loggers
 	Db         db.Database
 	PWD        string
+	AutoRouter = autoRouter
 	safeRouter martini.Router // All method, Router.NotFound(NotFound(), SubAny.Handle) already.
 	SubGet     martini.Router // GET method only
 	SubPut     martini.Router // PUT method only
@@ -57,15 +58,24 @@ func appStart() bool {
 	return started
 }
 
-// 给默认 Martini 对象添加 handler
+// +dl en
+// Handler add handler to builtin *Martini
+// +dl
+
+// 给内建 *Martini 对象添加 handler
 func Handler(handler ...martini.Handler) {
 	if !appStart() {
 		cacheHandlers = append(cacheHandlers, handler...)
 	}
 }
 
+// +dl en
+// Martini returns builtin *Martini and master Router.
+// call once, returns nil to again.
+// +dl
+
 /*
-  返回内置的 Martini 对象, 只能调用一次, 再次调用返回 nil.
+  返回内建 *Martini 和主 Router, 只能调用一次, 再次调用返回 nil.
   参数 handler 会优先于通过 Handler 添加的 handler 执行.
   已经执行过 .Action(Router.Handle)
 */
@@ -83,8 +93,12 @@ func Martini(handler ...martini.Handler) (*martini.Martini, martini.Router) {
 var notifyMaps map[string][]int
 var notifyFn []func(os.Signal) bool
 
-// ListenSignal 增加监听 sigs 的函数.
-// 监听函数 fn 的返回值如果是 true, 表示触发后剔除此监听函数.
+/*
+  ListenSignal 为监听 sigs 信号增加执行函数.
+  参数:
+ 	fn 执行函数, 返回值如果是 true, 表示触发后剔除此函数.
+ 	sigs 为一组要监听的信号, 支持系统信号和自定义信号.
+*/
 func ListenSignal(fn func(os.Signal) bool, sigs ...os.Signal) {
 	if appStart() {
 		return
@@ -110,9 +124,14 @@ func ListenSignal(fn func(os.Signal) bool, sigs ...os.Signal) {
 	}
 }
 
-// 按照 LIFO 的次序调用通过 Listen 增加的监听函数.
-// 如果捕获到 panic 中断调用, 并且监听函数会被剔除.
-func FireSignal(sig os.Signal) {
+/*
+  FireSignal 按照 LIFO 的次序调用 Listen 增加的监听函数.
+  如果捕获到 panic 中断调用, 并且监听函数会被剔除.
+  参数:
+	sig 指示触发信号
+	remove 指示触发后是否剔除掉所有的触发函数
+*/
+func FireSignal(sig os.Signal, remove bool) {
 	idx := notifyMaps[sig.String()]
 	for i := len(idx); i > 0; {
 		i--
@@ -125,7 +144,7 @@ func FireSignal(sig os.Signal) {
 		}
 		var clear bool
 		err := Recover(func() { clear = fn(sig) })
-		if clear || err != nil {
+		if remove || clear || err != nil {
 			notifyFn[i] = nil
 		}
 		if err != nil {
@@ -138,10 +157,11 @@ func signalNotify(sigs []os.Signal) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, sigs...)
 	for {
-		FireSignal(<-ch)
+		FireSignal(<-ch, false)
 	}
 }
 
+// Recover 执行函数 fn, 返回 recover() 结果
 func Recover(fn func()) (err interface{}) {
 	defer func() {
 		err = recover()
@@ -169,15 +189,19 @@ func init() {
 	SubDelete = martini.NewRouter()
 	SubOptions = martini.NewRouter()
 	SubAny = martini.NewRouter()
-	safeRouter.NotFound(notFound, SubAny.Handle)
+	safeRouter.NotFound(subDispatch, SubAny.Handle)
 }
 
-// NotFound Handler for Router, auto invoke other router by req.Method
-func NotFound() martini.Handler {
-	return notFound
+// +dl en
+// SubDispatch for master Router, auto dispatch SubXxxx router.
+// +dl
+
+// SubDispatch 仅用于主 Router, 根据 req.Method 分派子路由.
+func SubDispatch() martini.Handler {
+	return subDispatch
 }
 
-func notFound(res http.ResponseWriter, req *http.Request, c martini.Context) {
+func subDispatch(res http.ResponseWriter, req *http.Request, c martini.Context) {
 	switch req.Method {
 	case "GET":
 		SubGet.Handle(res, req, c)
@@ -240,7 +264,7 @@ func init() {
 
 // 自动注册路由, 不支持本地包, main 包.
 // 目前支持来自 github.com 的 package
-func AutoRouter(pattern string, h ...martini.Handler) {
+func autoRouter(pattern string, h ...martini.Handler) {
 	const GITHUB = "github.com"
 	if appStart() {
 		return
@@ -302,9 +326,12 @@ func AutoRouter(pattern string, h ...martini.Handler) {
 
 var rolesAll = []string{}
 
-// 设置角色名称集合,用于角色控制.
-// 如果要启用角色控制, 必须在注册路由之前进行设置.
-// 角色值会被转化为小写, 排序
+/*
+  RolesSet 设置字符串角色名称集合, 用于角色控制.
+  如果要启用角色控制, 必须在注册路由之前进行设置.
+  字符串值会被转化为小写, 排序, 剔重.
+  为 accessflags 传递 types.Role 值做准备.
+*/
 func RolesSet(rs ...string) {
 	if appStart() {
 		return
@@ -334,8 +361,8 @@ func filpSlice(a []string) []string {
 	return a[:s+1]
 }
 
-// 根据角色名称计算角色数字值.
-func rolesID(rs []string) (x Role) {
+// 依据 RolesSet 设置的字符串角色集合对参数 rs 进行计算, 返回 types.Role 值.
+func RolesToRole(rs []string) (x Role) {
 	rs = filpSlice(rs)
 	l := len(rolesAll)
 	for _, s := range rs {
@@ -347,7 +374,15 @@ func rolesID(rs []string) (x Role) {
 	return x
 }
 
+// +dl en
 // role-based access control
+// +dl
+
+/*
+  RBAC 返回用于角色控制的 Handler
+  依据 RolesSet 设置的字符串角色集合对参数 rs 进行计算,
+  得到 types.Role 值并使用 accessflags 生成 Handler
+*/
 func RBAC(rs []string) martini.Handler {
-	return accessflags.Forbidden(rolesID(rs))
+	return accessflags.Forbidden(RolesToRole(rs))
 }
