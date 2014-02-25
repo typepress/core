@@ -28,7 +28,6 @@ var (
 	Log        log.Loggers
 	Db         db.Database
 	PWD        string
-	AutoRouter = autoRouter
 	safeRouter martini.Router // All method, Router.NotFound(NotFound(), SubAny.Handle) already.
 	SubGet     martini.Router // GET method only
 	SubPut     martini.Router // PUT method only
@@ -39,6 +38,11 @@ var (
 	SubDelete  martini.Router // DELETE method only
 	SubOptions martini.Router // OPTIONS method only
 	SubAny     martini.Router // Any method
+)
+
+var (
+	AutoRouter       = Autorouter
+	PrefixImportPath = FixImportPath
 )
 
 const (
@@ -259,13 +263,9 @@ func init() {
 	}
 }
 
-// github.com/achun/testing-want_test.ExamplePanic
-// github.com/achun/testing-want/GET%2eUd%2edd.ExamplePanic
-
 // 自动注册路由, 不支持本地包, main 包.
 // 目前支持来自 github.com 的 package
-func autoRouter(pattern string, h ...martini.Handler) {
-	const GITHUB = "github.com"
+func Autorouter(pattern string, h ...martini.Handler) {
 	if appStart() {
 		return
 	}
@@ -274,37 +274,34 @@ func autoRouter(pattern string, h ...martini.Handler) {
 		return
 	}
 	name := runtime.FuncForPC(pc).Name()
-	names := strings.Split(name, "/")
-	if len(names) < 4 || names[0] != GITHUB {
+	name = strings.Replace(name, `%2e`, `.`, -1)
+
+	names := PrefixImportPath(name)
+	if len(names) == 0 {
 		println("AutoRouter not support:", name)
 		os.Exit(1)
-		return
-	}
-	names = names[3:]
-	l := len(names) - 1
-	pos := strings.LastIndex(names[l], ".")
-	if pos != -1 {
-		names[l] = names[l][:pos]
-	}
-	names[l] = strings.Replace(names[l], `%2e`, `.`, -1)
-	names = append(names[:l], strings.Split(names[l], `.`)...)
-	// fetch role,method
-	var roles, methods []string
-	for l >= 0 {
-		name = names[l]
-		if name == strings.ToUpper(name) {
-			methods = append(methods, name)
-		} else if name != strings.ToLower(name) {
-			roles = append(roles, strings.ToLower(name))
-		} else {
-			l--
-			continue
-		}
-		names = append(names[:l], names[l+1:]...)
-		l--
 	}
 
-	pattern = "/" + strings.Join(names, "/") + pattern
+	l := len(names) - 1
+	names = append(names[:l], strings.Split(names[l], `.`)...)
+
+	// fetch role,method
+	var roles, methods []string
+
+	patterns := ""
+	for i := 0; i <= l; i++ {
+		name = names[i]
+		if name == strings.ToUpper(name) {
+			methods = append(methods, name)
+			continue
+		} else if name != strings.ToLower(name) {
+			roles = append(roles, strings.ToLower(name))
+			continue
+		}
+		patterns += "/" + name
+	}
+	pattern = patterns + pattern
+
 	if len(roles) != 0 {
 		h = append([]martini.Handler{RBAC(roles)}, h...)
 	}
@@ -322,6 +319,21 @@ func autoRouter(pattern string, h ...martini.Handler) {
 			r.Any(pattern, h...)
 		}
 	}
+}
+
+/*
+  github.com/user/packagename/path/to/filename.FunctionName
+*/
+
+func FixImportPath(name string) []string {
+	names := strings.Split(name, "/")
+	l := len(names)
+	s := names[0]
+	switch {
+	case "github.com" == s && l > 3:
+		return names[3:]
+	}
+	return nil
 }
 
 var rolesAll = []string{}
