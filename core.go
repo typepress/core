@@ -1,7 +1,7 @@
 /*
   core 提供全局可用变量, 方法.
   全局可用的类型定义请
-	import "github.com/typepress/core/types"
+	import "github.com/typepress/types"
 */
 package core
 
@@ -9,14 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"sort"
-	"strings"
-
-	. "github.com/typepress/core/types"
+	"sync"
 
 	"github.com/achun/tom-toml"
-	"github.com/codegangsta/martini"
+	"github.com/go-martini/martini"
+
+	. "github.com/typepress/types"
+
 	"github.com/typepress/accessflags"
 	"github.com/typepress/db"
 	"github.com/typepress/log"
@@ -24,30 +24,25 @@ import (
 
 var (
 	// global
-	Conf       toml.Toml
-	Log        log.Loggers
-	Db         db.Database
-	PWD        string
-	safeRouter martini.Router // All method, Router.NotFound(NotFound(), SubAny.Handle) already.
-	SubGet     martini.Router // GET method only
-	SubPut     martini.Router // PUT method only
-	SubHead    martini.Router // HEAD method only
-	SubPost    martini.Router // POST method only
-	SubAjax    martini.Router // POST method only, with head: X-Requested-With "XMLHttpRequest"
-	SubPatch   martini.Router // PATCH method only
-	SubDelete  martini.Router // DELETE method only
-	SubOptions martini.Router // OPTIONS method only
-	SubAny     martini.Router // Any method
-)
-
-var (
-	AutoRouter       = Autorouter
-	PrefixImportPath = FixImportPath
+	Conf          toml.Toml
+	Log           log.Loggers
+	Db            db.Database
+	PWD           string
+	safeRouter    martini.Router // All method,
+	RouterGet     martini.Router // GET method only
+	RouterPut     martini.Router // PUT method only
+	RouterHead    martini.Router // HEAD method only
+	RouterPost    martini.Router // POST method only
+	RouterAjax    martini.Router // POST method only, with head: X-Requested-With "XMLHttpRequest"
+	RouterPatch   martini.Router // PATCH method only
+	RouterDelete  martini.Router // DELETE method only
+	RouterOptions martini.Router // OPTIONS method only
+	RouterAny     martini.Router // Any method
 )
 
 const (
-	SessionName    = "TypePression"
-	ServerShutDown = "server shutdown"
+	SessionName    = "TPSession"
+	ServerShutDown = "ServerShutDown"
 )
 
 // 默认的 Martini 对象
@@ -90,6 +85,7 @@ func Martini(handler ...martini.Handler) (*martini.Martini, martini.Router) {
 	started = true
 	safeMartini.Handlers(append(handler, cacheHandlers...)...)
 	safeMartini.Action(safeRouter.Handle)
+	cacheHandlers = nil
 	callInit()
 	return safeMartini, safeRouter
 }
@@ -128,6 +124,8 @@ func ListenSignal(fn func(os.Signal) bool, sigs ...os.Signal) {
 	}
 }
 
+var signalLock sync.RWMutex
+
 /*
   FireSignal 按照 LIFO 的次序调用 Listen 增加的监听函数.
   如果捕获到 panic 中断调用, 并且监听函数会被剔除.
@@ -136,7 +134,17 @@ func ListenSignal(fn func(os.Signal) bool, sigs ...os.Signal) {
 	remove 指示触发后是否剔除掉所有的触发函数
 */
 func FireSignal(sig os.Signal, remove bool) {
+
+	signalLock.RLock()
 	idx := notifyMaps[sig.String()]
+	signalLock.RUnlock()
+
+	if remove {
+		signalLock.Lock()
+		delete(notifyMaps, sig.String())
+		signalLock.Unlock()
+	}
+
 	for i := len(idx); i > 0; {
 		i--
 		if i >= len(notifyFn) {
@@ -184,48 +192,44 @@ func init() {
 	notifyMaps = map[string][]int{}
 
 	safeRouter = martini.NewRouter()
-	SubGet = martini.NewRouter()
-	SubPut = martini.NewRouter()
-	SubHead = martini.NewRouter()
-	SubPost = martini.NewRouter()
-	SubAjax = martini.NewRouter()
-	SubPatch = martini.NewRouter()
-	SubDelete = martini.NewRouter()
-	SubOptions = martini.NewRouter()
-	SubAny = martini.NewRouter()
-	safeRouter.NotFound(subDispatch, SubAny.Handle)
+	RouterGet = martini.NewRouter()
+	RouterPut = martini.NewRouter()
+	RouterHead = martini.NewRouter()
+	RouterPost = martini.NewRouter()
+	RouterAjax = martini.NewRouter()
+	RouterPatch = martini.NewRouter()
+	RouterDelete = martini.NewRouter()
+	RouterOptions = martini.NewRouter()
+	RouterAny = martini.NewRouter()
+	safeRouter.NotFound(RouterDispatch, RouterAny.Handle)
 }
 
 // +dl en
-// SubDispatch for master Router, auto dispatch SubXxxx router.
+// RouterDispatch for master Router, auto dispatch RouterXxxx router.
 // +dl
 
-// SubDispatch 仅用于主 Router, 根据 req.Method 分派子路由.
-func SubDispatch() martini.Handler {
-	return subDispatch
-}
-
-func subDispatch(res http.ResponseWriter, req *http.Request, c martini.Context) {
+// RouterDispatch 仅用于主路由, 根据 req.Method 分派子路由.
+func RouterDispatch(res http.ResponseWriter, req *http.Request, c martini.Context) {
 	switch req.Method {
 	case "GET":
-		SubGet.Handle(res, req, c)
+		RouterGet.Handle(res, req, c)
 	case "PUT":
-		SubPut.Handle(res, req, c)
+		RouterPut.Handle(res, req, c)
 	case "HEAD":
-		SubHead.Handle(res, req, c)
+		RouterHead.Handle(res, req, c)
 	case "POST":
 		if req.Header.Get("X-Requested-With") == "XMLHttpRequest" {
-			SubAjax.Handle(res, req, c)
+			RouterAjax.Handle(res, req, c)
 		} else {
-			SubPost.Handle(res, req, c)
+			RouterPost.Handle(res, req, c)
 		}
 
 	case "PATCH":
-		SubPatch.Handle(res, req, c)
+		RouterPatch.Handle(res, req, c)
 	case "DELETE":
-		SubDelete.Handle(res, req, c)
+		RouterDelete.Handle(res, req, c)
 	case "OPTIONS":
-		SubOptions.Handle(res, req, c)
+		RouterOptions.Handle(res, req, c)
 	}
 }
 
@@ -243,97 +247,6 @@ func RegisterInit(fn ...func()) {
 		return
 	}
 	initfn = append(initfn, fn...)
-}
-
-var routerMap map[string]martini.Router
-
-func init() {
-	routerMap = map[string]martini.Router{
-		"GET":     SubGet,
-		"PUT":     SubPut,
-		"HEAD":    SubHead,
-		"POST":    SubPost,
-		"AJAX":    SubAjax,
-		"PATCH":   SubPatch,
-		"DELETE":  SubDelete,
-		"DEL":     SubDelete,
-		"OPTIONS": SubOptions,
-		"OPT":     SubOptions,
-		"ANY":     SubAny,
-	}
-}
-
-// 自动注册路由, 不支持本地包, main 包.
-// 目前支持来自 github.com 的 package
-func Autorouter(pattern string, h ...martini.Handler) {
-	if appStart() {
-		return
-	}
-	pc, _, _, ok := runtime.Caller(2)
-	if !ok {
-		return
-	}
-	name := runtime.FuncForPC(pc).Name()
-	name = strings.Replace(name, `%2e`, `.`, -1)
-
-	names := PrefixImportPath(name)
-	if len(names) == 0 {
-		println("AutoRouter not support:", name)
-		os.Exit(1)
-	}
-
-	l := len(names) - 1
-	names = append(names[:l], strings.Split(names[l], `.`)...)
-
-	// fetch role,method
-	var roles, methods []string
-
-	patterns := ""
-	for i := 0; i <= l; i++ {
-		name = names[i]
-		if name == strings.ToUpper(name) {
-			methods = append(methods, name)
-			continue
-		} else if name != strings.ToLower(name) {
-			roles = append(roles, strings.ToLower(name))
-			continue
-		}
-		patterns += "/" + name
-	}
-	pattern = patterns + pattern
-
-	if len(roles) != 0 {
-		h = append([]martini.Handler{RBAC(roles)}, h...)
-	}
-
-	if len(methods) == 0 {
-		SubAny.Any(pattern, h...)
-		return
-	}
-
-	for _, method := range methods {
-		r := routerMap[method]
-		if r == nil {
-			SubAny.Any(pattern, h...)
-		} else {
-			r.Any(pattern, h...)
-		}
-	}
-}
-
-/*
-  github.com/user/packagename/path/to/filename.FunctionName
-*/
-
-func FixImportPath(name string) []string {
-	names := strings.Split(name, "/")
-	l := len(names)
-	s := names[0]
-	switch {
-	case "github.com" == s && l > 3:
-		return names[3:]
-	}
-	return nil
 }
 
 var rolesAll = []string{}
